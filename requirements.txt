@@ -1,0 +1,36 @@
+# Core RAG Dependencies
+langchain>=0.1.0
+langchain-community>=0.0.10
+langchain-google-genai>=1.0.0
+langchain-text-splitters>=0.0.1
+langgraph>=0.0.20
+
+# Google AI
+google-generativeai>=0.3.0
+
+# Web Scraping & Processing
+trafilatura>=1.6.0
+playwright>=1.40.0
+beautifulsoup4>=4.12.0
+requests>=2.31.0
+
+# Vector Store & Search
+faiss-cpu>=1.7.4
+numpy>=1.24.0
+
+# API & UI
+fastapi>=0.100.0
+uvicorn[standard]>=0.20.0
+gradio>=4.0.0
+pydantic>=2.0.0
+
+# Environment & Utilities
+python-dotenv>=1.0.0
+typing-extensions>=4.5.0
+tiktoken>=0.5.0
+
+# Development
+pytest>=7.0.0
+black>=23.0.0
+jupyter>=1.0.0
+sentence-transformers>=2.2.0

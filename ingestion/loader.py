@@ -8,7 +8,7 @@ from trafilatura.settings import use_config
 from trafilatura import bare_extraction
 from playwright.sync_api import sync_playwright
 
-from langchain.schema import Document  # or your own Document class
+from langchain_core.documents import Document
 
 logger = logging.getLogger(__name__)
 
