@@ -19,6 +19,10 @@ class Settings(BaseModel):
     temperature: float = Field(default=0.3, ge=0.0, le=1.0, description="Model temperature")
     max_tokens: int = Field(default=1000, gt=0, description="Maximum tokens for generation")
     
+    # Embeddings Configuration
+    use_local_embeddings: bool = Field(default=False, description="Use local sentence-transformers instead of Google embeddings")
+    local_embedding_model: str = Field(default="all-MiniLM-L6-v2", description="Local embedding model name")
+    
     # Text Processing
     chunk_size: int = Field(default=1000, gt=0, description="Text chunk size")
     chunk_overlap: int = Field(default=100, ge=0, description="Text chunk overlap")
@@ -59,6 +63,8 @@ class Settings(BaseModel):
     class Config:
         env_file = ".env"
         env_prefix = "CHAT_"
+        # Fix the pydantic v2 warning
+        protected_namespaces = ()
 
 def get_settings() -> Settings:
     """Get validated application settings."""
@@ -67,6 +73,8 @@ def get_settings() -> Settings:
         model_name=os.getenv("CHAT_MODEL_NAME", "gemini-1.5-flash"),
         temperature=float(os.getenv("CHAT_TEMPERATURE", "0.3")),
         max_tokens=int(os.getenv("CHAT_MAX_TOKENS", "1000")),
+        use_local_embeddings=os.getenv("CHAT_USE_LOCAL_EMBEDDINGS", "false").lower() in ["true", "1", "yes"],
+        local_embedding_model=os.getenv("CHAT_LOCAL_EMBEDDING_MODEL", "all-MiniLM-L6-v2"),
         chunk_size=int(os.getenv("CHAT_CHUNK_SIZE", "1000")),
         chunk_overlap=int(os.getenv("CHAT_CHUNK_OVERLAP", "100")),
         retrieval_k=int(os.getenv("CHAT_RETRIEVAL_K", "5")),

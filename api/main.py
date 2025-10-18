@@ -1,5 +1,13 @@
 """Improved FastAPI server with better security and error handling."""
 
+import sys
+import os
+from pathlib import Path
+
+# Fix import paths - add project root to Python path
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
+
 import logging
 from contextlib import asynccontextmanager
 from typing import Dict, Any
@@ -9,10 +17,17 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import uvicorn
 
-from ingestion.loader import ingest_url, URLValidationError
-from retrieval.rag_chain import RAGChain, RAGChainError
-from api.schemas import IngestRequest, ChatRequest, ChatResponse, StatusResponse
-from config import get_settings
+try:
+    from ingestion.loader import ingest_url, URLValidationError
+    from retrieval.rag_chain import RAGChain, RAGChainError
+    from api.schemas import IngestRequest, ChatRequest, ChatResponse, StatusResponse
+    from config import get_settings
+except ImportError as e:
+    print(f"❌ Import error: {e}")
+    print(f"📁 Current working directory: {os.getcwd()}")
+    print(f"📁 Project root: {project_root}")
+    print(f"🐍 Python path: {sys.path}")
+    raise
 
 # Configure logging
 logging.basicConfig(
@@ -267,16 +282,20 @@ async def clear_documents() -> Dict[str, str]:
 
 if __name__ == "__main__":
     print("🚀 Starting improved FastAPI server...")
+    print(f"📁 Working directory: {os.getcwd()}")
+    print(f"📁 Project root: {project_root}")
     
     # Load settings for server configuration
     try:
         server_settings = get_settings()
         host = server_settings.api_host
         port = server_settings.api_port
+        print(f"⚙️ Loaded settings: {host}:{port}")
     except Exception as e:
         logger.error(f"Failed to load settings: {e}")
         host = "0.0.0.0"
         port = 8000
+        print(f"⚙️ Using default settings: {host}:{port}")
     
     uvicorn.run(
         "api.main:app",
