@@ -14,6 +14,11 @@ from langchain_core.documents import Document
 
 from config import get_settings
 
+# Set environment variables to prevent threading issues on macOS
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -118,34 +123,106 @@ Answer:"""
             return False
     
     def _initialize_local_embeddings(self):
-        """Initialize local sentence transformer embeddings."""
+        """Initialize local sentence transformer embeddings using the maintained package."""
         try:
-            from langchain_community.embeddings import SentenceTransformerEmbeddings
+            from langchain_huggingface import HuggingFaceEmbeddings
             
-            self.embeddings = SentenceTransformerEmbeddings(
-                model_name=self.settings.local_embedding_model
+            # Use sentence-transformers prefix for model name if not already present
+            model_name = self.settings.local_embedding_model
+            if not model_name.startswith("sentence-transformers/"):
+                model_name = f"sentence-transformers/{model_name}"
+            
+            self.embeddings = HuggingFaceEmbeddings(
+                model_name=model_name,
+                model_kwargs={'device': 'cpu'},  # Force CPU to avoid GPU issues
+                encode_kwargs={'normalize_embeddings': True}  # Better similarity scores
             )
-            logger.info(f"✅ Local embeddings initialized: {self.settings.local_embedding_model}")
+            logger.info(f"✅ HuggingFace embeddings initialized: {model_name}")
             
         except ImportError:
-            logger.error("❌ sentence-transformers not installed. Installing...")
+            logger.error("❌ langchain-huggingface not installed. Installing...")
             try:
                 import subprocess
                 import sys
-                subprocess.check_call([sys.executable, "-m", "pip", "install", "sentence-transformers"])
+                subprocess.check_call([
+                    sys.executable, "-m", "pip", "install", 
+                    "langchain-huggingface>=0.0.3", 
+                    "sentence-transformers>=3.0.1"
+                ])
                 
-                from langchain_community.embeddings import SentenceTransformerEmbeddings
-                self.embeddings = SentenceTransformerEmbeddings(
-                    model_name=self.settings.local_embedding_model
+                from langchain_huggingface import HuggingFaceEmbeddings
+                
+                model_name = self.settings.local_embedding_model
+                if not model_name.startswith("sentence-transformers/"):
+                    model_name = f"sentence-transformers/{model_name}"
+                
+                self.embeddings = HuggingFaceEmbeddings(
+                    model_name=model_name,
+                    model_kwargs={'device': 'cpu'},
+                    encode_kwargs={'normalize_embeddings': True}
                 )
-                logger.info(f"✅ Installed and initialized local embeddings: {self.settings.local_embedding_model}")
+                logger.info(f"✅ Installed and initialized HuggingFace embeddings: {model_name}")
                 
             except Exception as install_error:
-                logger.error(f"❌ Failed to install sentence-transformers: {install_error}")
-                raise RAGChainError("Could not initialize any embedding model")
+                logger.error(f"❌ Failed to install langchain-huggingface: {install_error}")
+                logger.info("🔄 Trying fallback to basic embeddings...")
+                self._initialize_fallback_embeddings()
                 
         except Exception as e:
-            logger.error(f"❌ Failed to initialize local embeddings: {e}")
+            logger.error(f"❌ Failed to initialize HuggingFace embeddings: {e}")
+            logger.info("🔄 Trying fallback to basic embeddings...")
+            self._initialize_fallback_embeddings()
+    
+    def _initialize_fallback_embeddings(self):
+        """Initialize a simple TF-IDF based embedding as last resort."""
+        try:
+            from sklearn.feature_extraction.text import TfidfVectorizer
+            import numpy as np
+            from langchain_core.embeddings import Embeddings
+            
+            class TFIDFEmbeddings(Embeddings):
+                def __init__(self, max_features=384):
+                    self.vectorizer = TfidfVectorizer(
+                        max_features=max_features,
+                        stop_words='english',
+                        lowercase=True,
+                        ngram_range=(1, 2)
+                    )
+                    self.fitted = False
+                    self.dim = max_features
+                
+                def embed_documents(self, texts: List[str]) -> List[List[float]]:
+                    if not self.fitted:
+                        self.vectorizer.fit(texts)
+                        self.fitted = True
+                    
+                    vectors = self.vectorizer.transform(texts).toarray()
+                    # Pad or truncate to fixed dimension
+                    result = []
+                    for vector in vectors:
+                        if len(vector) < self.dim:
+                            vector = np.pad(vector, (0, self.dim - len(vector)))
+                        elif len(vector) > self.dim:
+                            vector = vector[:self.dim]
+                        result.append(vector.tolist())
+                    return result
+                
+                def embed_query(self, text: str) -> List[float]:
+                    if not self.fitted:
+                        return [0.0] * self.dim
+                    
+                    vector = self.vectorizer.transform([text]).toarray()[0]
+                    if len(vector) < self.dim:
+                        vector = np.pad(vector, (0, self.dim - len(vector)))
+                    elif len(vector) > self.dim:
+                        vector = vector[:self.dim]
+                    return vector.tolist()
+            
+            self.embeddings = TFIDFEmbeddings()
+            logger.info("✅ Fallback TF-IDF embeddings initialized")
+            
+        except Exception as e:
+            logger.error(f"❌ All embedding methods failed: {e}")
             raise RAGChainError("Could not initialize any embedding model")
     
     @contextmanager
@@ -269,14 +346,17 @@ Answer:"""
     
     def get_status(self) -> Dict[str, Any]:
         """Get detailed status information."""
+        embedding_type = type(self.embeddings).__name__
+        is_local = "HuggingFace" in embedding_type or "TFIDF" in embedding_type
+        
         return {
             "model": self.settings.model_name,
-            "embeddings": type(self.embeddings).__name__,
+            "embeddings": embedding_type,
             "documents": self.get_doc_count(),
             "ready": self.qa_chain is not None and self.get_doc_count() > 0,
             "chunk_size": self.settings.chunk_size,
             "retrieval_k": self.settings.retrieval_k,
-            "using_local_embeddings": "SentenceTransformer" in type(self.embeddings).__name__
+            "using_local_embeddings": is_local
         }
     
     def clear_documents(self):
