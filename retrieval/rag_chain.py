@@ -37,31 +37,18 @@ class RAGChain:
         
     def _initialize_components(self):
         """Initialize AI components with proper error handling."""
-        try:
-            # Initialize embeddings
-            self.embeddings = GoogleGenerativeAIEmbeddings(
-                model="models/embedding-001",
-                google_api_key=self.settings.google_api_key
-            )
-            logger.info("✅ Google Generative AI embeddings initialized")
-            
-        except Exception as e:
-            logger.warning(f"⚠️ Failed to initialize Google embeddings: {e}")
-            logger.info("🔄 Falling back to sentence transformers")
-            try:
-                from sentence_transformers import SentenceTransformer
-                from langchain_community.embeddings import SentenceTransformerEmbeddings
-                
-                self.embeddings = SentenceTransformerEmbeddings(
-                    model_name="all-MiniLM-L6-v2"
-                )
-                logger.info("✅ Sentence transformer embeddings initialized")
-            except Exception as fallback_error:
-                logger.error(f"❌ All embedding methods failed: {fallback_error}")
-                raise RAGChainError("Could not initialize any embedding model")
+        # Initialize embeddings based on configuration
+        if self.settings.use_local_embeddings:
+            logger.info("💻 Using local embeddings (configured preference)")
+            self._initialize_local_embeddings()
+        else:
+            logger.info("🌐 Attempting to use Google embeddings...")
+            if not self._initialize_google_embeddings():
+                logger.info("🔄 Falling back to local embeddings")
+                self._initialize_local_embeddings()
         
+        # Initialize LLM
         try:
-            # Initialize LLM
             self.llm = ChatGoogleGenerativeAI(
                 model=self.settings.model_name,
                 google_api_key=self.settings.google_api_key,
@@ -104,6 +91,63 @@ Answer:"""
             input_variables=["context", "question"]
         )
     
+    def _initialize_google_embeddings(self) -> bool:
+        """Try to initialize Google embeddings, return True if successful."""
+        try:
+            # Test with a simple embedding call to check quota
+            test_embeddings = GoogleGenerativeAIEmbeddings(
+                model="models/embedding-001",
+                google_api_key=self.settings.google_api_key
+            )
+            
+            # Test with a simple text to verify quota
+            test_embeddings.embed_query("test")
+            
+            self.embeddings = test_embeddings
+            logger.info("✅ Google Generative AI embeddings initialized and tested")
+            return True
+            
+        except Exception as e:
+            error_msg = str(e).lower()
+            if "quota" in error_msg or "429" in error_msg:
+                logger.warning(f"📊 Quota exceeded for Google embeddings: {e}")
+            elif "401" in error_msg or "unauthorized" in error_msg:
+                logger.warning(f"🔑 Invalid API key for Google embeddings: {e}")
+            else:
+                logger.warning(f"⚠️ Failed to initialize Google embeddings: {e}")
+            return False
+    
+    def _initialize_local_embeddings(self):
+        """Initialize local sentence transformer embeddings."""
+        try:
+            from langchain_community.embeddings import SentenceTransformerEmbeddings
+            
+            self.embeddings = SentenceTransformerEmbeddings(
+                model_name=self.settings.local_embedding_model
+            )
+            logger.info(f"✅ Local embeddings initialized: {self.settings.local_embedding_model}")
+            
+        except ImportError:
+            logger.error("❌ sentence-transformers not installed. Installing...")
+            try:
+                import subprocess
+                import sys
+                subprocess.check_call([sys.executable, "-m", "pip", "install", "sentence-transformers"])
+                
+                from langchain_community.embeddings import SentenceTransformerEmbeddings
+                self.embeddings = SentenceTransformerEmbeddings(
+                    model_name=self.settings.local_embedding_model
+                )
+                logger.info(f"✅ Installed and initialized local embeddings: {self.settings.local_embedding_model}")
+                
+            except Exception as install_error:
+                logger.error(f"❌ Failed to install sentence-transformers: {install_error}")
+                raise RAGChainError("Could not initialize any embedding model")
+                
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize local embeddings: {e}")
+            raise RAGChainError("Could not initialize any embedding model")
+    
     @contextmanager
     def _error_context(self, operation: str):
         """Context manager for consistent error handling."""
@@ -128,16 +172,39 @@ Answer:"""
             if not splits:
                 raise RAGChainError("No content could be extracted from documents")
             
-            # Create or update vector store
-            if self.vector_store is None:
-                self.vector_store = FAISS.from_documents(splits, self.embeddings)
-                logger.info("🆕 Created new FAISS vector store")
-            else:
-                # More efficient: add documents to existing store
-                texts = [doc.page_content for doc in splits]
-                metadatas = [doc.metadata for doc in splits]
-                self.vector_store.add_texts(texts, metadatas)
-                logger.info("➕ Added documents to existing vector store")
+            try:
+                # Create or update vector store
+                if self.vector_store is None:
+                    self.vector_store = FAISS.from_documents(splits, self.embeddings)
+                    logger.info("🆕 Created new FAISS vector store")
+                else:
+                    # More efficient: add documents to existing store
+                    texts = [doc.page_content for doc in splits]
+                    metadatas = [doc.metadata for doc in splits]
+                    self.vector_store.add_texts(texts, metadatas)
+                    logger.info("➕ Added documents to existing vector store")
+                    
+            except Exception as e:
+                error_msg = str(e).lower()
+                if "quota" in error_msg or "429" in error_msg:
+                    logger.error(f"📊 Embedding quota exceeded during document processing")
+                    if not self.settings.use_local_embeddings:
+                        logger.info("🔄 Switching to local embeddings and retrying...")
+                        self._initialize_local_embeddings()
+                        
+                        # Retry with local embeddings
+                        if self.vector_store is None:
+                            self.vector_store = FAISS.from_documents(splits, self.embeddings)
+                            logger.info("🆕 Created new FAISS vector store with local embeddings")
+                        else:
+                            texts = [doc.page_content for doc in splits]
+                            metadatas = [doc.metadata for doc in splits]
+                            self.vector_store.add_texts(texts, metadatas)
+                            logger.info("➕ Added documents to existing vector store with local embeddings")
+                    else:
+                        raise
+                else:
+                    raise
             
             # Create/update QA chain
             self.qa_chain = RetrievalQA.from_chain_type(
@@ -208,7 +275,8 @@ Answer:"""
             "documents": self.get_doc_count(),
             "ready": self.qa_chain is not None and self.get_doc_count() > 0,
             "chunk_size": self.settings.chunk_size,
-            "retrieval_k": self.settings.retrieval_k
+            "retrieval_k": self.settings.retrieval_k,
+            "using_local_embeddings": "SentenceTransformer" in type(self.embeddings).__name__
         }
     
     def clear_documents(self):
